@@ -1,6 +1,6 @@
 from poly_utils import (
-    Polynomial, create_poly_mod, poly_mul_mod, sample_uniform, 
-    sample_error, bytes_to_bits, bits_to_bytes
+    create_poly_mod, poly_mul, poly_add, poly_sub, poly_neg, 
+    sample_uniform, sample_error, bytes_to_bits, bits_to_bytes
 )
 
 class RLWECrypto:
@@ -27,25 +27,18 @@ class RLWECrypto:
         Returns:
             tuple: (public_key, private_key)
         """
-        # Sample random polynomial a
-        a = sample_uniform(self.n, self.q)
-        
-        # Sample small polynomials s and e
+        a = sample_uniform(self.n, self.q)              # Sample polynomial a
         s = sample_error(self.n, self.q, self.std_dev)  # Private key
         e = sample_error(self.n, self.q, self.std_dev)  # Error
         
-        # Convert to Polynomial objects
-        a_poly = Polynomial(a)
-        s_poly = Polynomial(s)
-        e_poly = Polynomial(e)
+        # as = a*s mod (x^n + 1, q)
+        as_poly = poly_mul(a, s, self.n, self.q)
         
-        # Compute public key b = -(a*s + e) mod q
-        as_poly = poly_mul_mod(a_poly, s_poly, self.poly_mod, self.q)
-        b_poly = (-as_poly - e_poly) % self.q
-        b = b_poly.to_list(self.n)
+        # b = -(a*s + e) mod q
+        as_plus_e = poly_add(as_poly, e, self.q)
+        b = poly_neg(as_plus_e, self.q)
         
-        # Public key is (a, b), private key is s
-        return ((a, b), s)
+        return ((a, b), s) # (public_key, private_key)
     
     def encrypt(self, public_key, message):
         """
@@ -60,32 +53,22 @@ class RLWECrypto:
         """
         a, b = public_key
         
-        # Sample random small r
-        r = sample_error(self.n, self.q, self.std_dev)
         
-        # Sample errors e1, e2
-        e1 = sample_error(self.n, self.q, self.std_dev)
-        e2 = sample_error(self.n, self.q, self.std_dev)
-        
-        # Convert to Polynomial objects
-        a_poly = Polynomial(a)
-        b_poly = Polynomial(b)
-        r_poly = Polynomial(r)
-        e1_poly = Polynomial(e1)
-        e2_poly = Polynomial(e2)
+        r = sample_error(self.n, self.q, self.std_dev)  # Sample random polynomial r
+        e1 = sample_error(self.n, self.q, self.std_dev) # Error for c1
+        e2 = sample_error(self.n, self.q, self.std_dev) # Error for c2
         
         # Scale message to q/2
-        scaled_message = []
-        for bit in message:
-            scaled_message.append((bit * (self.q // 2)) % self.q)
-        scaled_message_poly = Polynomial(scaled_message)
+        scaled_message = [(bit * (self.q // 2)) % self.q for bit in message]
         
-        # Compute ciphertext
-        c1_poly = (poly_mul_mod(a_poly, r_poly, self.poly_mod, self.q) + e1_poly) % self.q
-        c2_poly = (poly_mul_mod(b_poly, r_poly, self.poly_mod, self.q) + e2_poly + scaled_message_poly) % self.q
+        # c1 = a*r + e1 mod (x^n + 1, q)
+        ar = poly_mul(a, r, self.n, self.q)
+        c1 = poly_add(ar, e1, self.q)
         
-        c1 = c1_poly.to_list(self.n)
-        c2 = c2_poly.to_list(self.n)
+        # c2 = b*r + e2 + scaled_message mod (x^n + 1, q)
+        br = poly_mul(b, r, self.n, self.q)
+        br_e2 = poly_add(br, e2, self.q)
+        c2 = poly_add(br_e2, scaled_message, self.q)
         
         return (c1, c2)
     
@@ -103,15 +86,9 @@ class RLWECrypto:
         c1, c2 = ciphertext
         s = private_key
         
-        # Convert to Polynomial objects
-        c1_poly = Polynomial(c1)
-        c2_poly = Polynomial(c2)
-        s_poly = Polynomial(s)
-        
-        # Compute m' = c2 + c1*s
-        c1s_poly = poly_mul_mod(c1_poly, s_poly, self.poly_mod, self.q)
-        m_scaled_poly = (c2_poly + c1s_poly) % self.q
-        m_scaled = m_scaled_poly.to_list(self.n)
+        # m' = c2 + c1*s mod (x^n + 1, q)
+        c1s = poly_mul(c1, s, self.n, self.q)
+        m_scaled = poly_add(c2, c1s, self.q)
         
         # Round to nearest multiple of q/2
         binary_msg = [0] * self.n
@@ -124,7 +101,7 @@ class RLWECrypto:
     
     def encode_message(self, message_str):
         """
-        Encode a string message as a binary polynomial
+        Encode a string message as a binary polynomial (pad with zeros if necessary)
         
         Args:
             message_str: String to encrypt
@@ -132,11 +109,9 @@ class RLWECrypto:
         Returns:
             list: Binary polynomial representation
         """
-        # Convert string to bytes, then to bits
         message_bytes = message_str.encode('utf-8')
         bits = bytes_to_bits(message_bytes)
         
-        # Pad with zeros if necessary
         binary_poly = [0] * self.n
         for i in range(min(len(bits), self.n)):
             binary_poly[i] = bits[i]
@@ -153,9 +128,6 @@ class RLWECrypto:
         Returns:
             str: Decoded message
         """
-        # Convert bits to bytes
-        bytes_data = bits_to_bytes(binary_poly)
-            
-        # Convert bytes to string and strip any trailing null bytes/characters
+        bytes_data = bits_to_bytes(binary_poly)    
         decoded = bytes_data.decode('utf-8', errors='ignore').rstrip('\x00')
         return decoded
